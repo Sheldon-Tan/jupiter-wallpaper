@@ -24,6 +24,8 @@ ROOT = Path(__file__).resolve().parent
 STATE = ROOT / ".wallpaper-state.json"
 STOP = ROOT / ".stop"
 LOG = ROOT / "wallpaper.log"
+ROTATION_COUNT = ROOT / ".rotation-count.json"
+ROTATION_COUNT_TMP = ROOT / ".rotation-count.json.tmp"
 USER32 = ctypes.windll.user32
 USER32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
 USER32.FindWindowW.restype = wintypes.HWND
@@ -79,6 +81,24 @@ def log(message: str) -> None:
         file.write(time.strftime("%Y-%m-%d %H:%M:%S ") + message + "\n")
 
 
+def load_rotation_count() -> int:
+    if not ROTATION_COUNT.exists():
+        return 0
+    try:
+        turns = json.loads(ROTATION_COUNT.read_text(encoding="utf-8"))["completed_turns"]
+        if type(turns) is int and turns >= 0:
+            return turns
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    raise ValueError(f"计数文件无效：{ROTATION_COUNT}")
+
+
+def save_rotation_count(turns: int) -> None:
+    ROTATION_COUNT_TMP.write_text(
+        json.dumps({"completed_turns": turns}) + "\n", encoding="utf-8")
+    ROTATION_COUNT_TMP.replace(ROTATION_COUNT)
+
+
 class WallpaperFiles(http.server.SimpleHTTPRequestHandler):
     """Serve wallpaper assets and the local playback state."""
 
@@ -89,24 +109,71 @@ class WallpaperFiles(http.server.SimpleHTTPRequestHandler):
     wallpaper_hwnd = 0
     screen_width = 0
     screen_height = 0
+    rotation_total = 0
+    rotation_sessions: dict[str, int] = {}
+    rotation_lock = threading.Lock()
+
+    def send_json(self, data: dict) -> None:
+        body = json.dumps(data).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def do_GET(self):
         path = urlsplit(self.path).path
+        if path == "/rotation-count":
+            with self.rotation_lock:
+                turns = type(self).rotation_total
+            self.send_json({"completed_turns": turns})
+            return
         if path == "/playback":
             paused = desktop_obscured(self.wallpaper_hwnd, self.screen_width,
                                       self.screen_height)
-            body = json.dumps({"paused": paused}).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            self.send_json({"paused": paused})
             return
         if path not in self.ALLOWED:
             self.send_error(404)
             return
         super().do_GET()
+
+    def do_POST(self):
+        if urlsplit(self.path).path != "/rotation-count":
+            self.send_error(404)
+            return
+        if self.headers.get("Content-Type", "").split(";", 1)[0] != "application/json":
+            self.send_error(415)
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 0 < length <= 256:
+                raise ValueError("invalid length")
+            data = json.loads(self.rfile.read(length))
+            session = data["session"]
+            completed = data["completed"]
+            if (not isinstance(session, str) or not 1 <= len(session) <= 64 or
+                    not all(character.isalnum() or character == "-" for character in session) or
+                    type(completed) is not int or not 0 <= completed <= 10_000_000):
+                raise ValueError("invalid count")
+        except (ValueError, KeyError, TypeError, UnicodeDecodeError):
+            self.send_error(400)
+            return
+        with self.rotation_lock:
+            cls = type(self)
+            previous = cls.rotation_sessions.get(session, 0)
+            if completed > previous:
+                total = cls.rotation_total + completed - previous
+                try:
+                    save_rotation_count(total)
+                except OSError as error:
+                    log(f"Rotation count save failed: {error!r}")
+                    self.send_error(500)
+                    return
+                cls.rotation_total = total
+                cls.rotation_sessions[session] = completed
+            self.send_json({"completed_turns": cls.rotation_total})
 
     def log_message(self, format, *args):
         pass
@@ -218,6 +285,8 @@ def run(map_name: str = "cassini") -> None:
         STATE.unlink(missing_ok=True)
     STOP.unlink(missing_ok=True)
     os.chdir(ROOT)
+    WallpaperFiles.rotation_total = load_rotation_count()
+    WallpaperFiles.rotation_sessions = {}
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), WallpaperFiles)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     port = server.server_address[1]

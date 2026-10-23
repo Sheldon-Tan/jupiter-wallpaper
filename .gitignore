@@ -1,6 +1,7 @@
 # Browser profile and live wallpaper state
 .browser-profile/
 .wallpaper-state.json
+.rotation-count.json*
 .stop
 wallpaper.log
 

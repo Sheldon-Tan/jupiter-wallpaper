@@ -25,14 +25,19 @@ def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "hubble"
     if mode not in ("hubble", "cassini", "merged"):
         raise ValueError("Use hubble, cassini, or merged")
-    output = ROOT / f"preview_{mode}_4k.png"
+    phase = float(sys.argv[2]) if len(sys.argv) > 2 else None
+    if phase is not None and not 0 <= phase < 1:
+        raise ValueError("Phase must be between 0 and 1")
+    output = ROOT / (f"preview_{mode}_phase_{phase:g}_4k.png" if phase is not None
+                     else f"preview_{mode}_4k.png")
     try:
         subprocess.run([
             str(chrome_path()), "--headless=new", "--enable-unsafe-swiftshader",
             "--disable-gpu-sandbox", "--hide-scrollbars",
             "--force-device-scale-factor=1", "--window-size=3840,2160",
             f"--screenshot={output}", "--virtual-time-budget=9000",
-            f"http://127.0.0.1:{server.server_address[1]}/?map={mode}",
+            f"http://127.0.0.1:{server.server_address[1]}/?map={mode}"
+            + (f"&phase={phase}" if phase is not None else ""),
         ], cwd=ROOT, timeout=60, check=True, stdout=subprocess.DEVNULL)
     finally:
         server.shutdown()

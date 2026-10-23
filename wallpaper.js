@@ -3,12 +3,16 @@
   'use strict';
   const canvas = document.getElementById('sky');
   const status = document.getElementById('status');
+  const rotationCount = document.getElementById('rotation-count');
   const params = new URLSearchParams(location.search);
   const demo = params.has('demo');
   const mapName = ['cassini', 'hubble', 'merged'].includes(params.get('map'))
     ? params.get('map') : 'cassini';
   const cassini = mapName === 'cassini';
   const merged = mapName === 'merged';
+  const requestedPhase = params.get('phase');
+  const phaseOverride = requestedPhase !== null && Number.isFinite(Number(requestedPhase))
+    ? Number(requestedPhase) : null;
   if (demo) document.body.classList.add('preview');
   const targetWidth = Math.max(3840, Math.round(innerWidth * devicePixelRatio));
   const targetHeight = Math.max(2160, Math.round(innerHeight * devicePixelRatio));
@@ -23,10 +27,17 @@
   const top = Math.min(targetHeight, Math.ceil(centerY + radius));
   canvas.width = right - left;
   canvas.height = top - bottom;
-  canvas.style.left = `${left * innerWidth / targetWidth}px`;
-  canvas.style.top = `${innerHeight * (1 - top / targetHeight)}px`;
-  canvas.style.width = `${canvas.width * innerWidth / targetWidth}px`;
-  canvas.style.height = `${canvas.height * innerHeight / targetHeight}px`;
+  function positionCanvas() {
+    // The host attaches and enlarges Chrome after this script starts.
+    // Use one scale on both axes so other screen aspect ratios stay round.
+    const scale = innerHeight / targetHeight;
+    canvas.style.left = `${innerWidth / 2 + (left - targetWidth / 2) * scale}px`;
+    canvas.style.top = `${innerHeight / 2 - (top - targetHeight / 2) * scale}px`;
+    canvas.style.width = `${canvas.width * scale}px`;
+    canvas.style.height = `${canvas.height * scale}px`;
+  }
+  positionCanvas();
+  addEventListener('resize', positionCanvas);
   const gl = canvas.getContext('webgl2', {
     antialias: false, alpha: false, depth: false, stencil: false,
     powerPreference: 'high-performance', preserveDrawingBuffer: false
@@ -82,8 +93,9 @@
       float latitude = mix(planetocentric, planetographic, u_planetographic);
       float longitude = atan(q.x, z);
       // With north up, cloud features drift left-to-right as Jupiter turns.
-      vec2 uv = vec2(fract(u_initial_phase + longitude / (2.0 * PI) - u_rotation),
+      vec2 uv = vec2(u_initial_phase + longitude / (2.0 * PI) - u_rotation,
                      0.5 + latitude / PI);
+      // GL_REPEAT wraps u; keeping it unwrapped preserves correct mipmap derivatives.
       // Hubble's map lacks the extreme poles; Cassini covers them.
       uv.y = clamp(uv.y, u_polar_limit, 1.0 - u_polar_limit);
       // A small negative LOD bias avoids unnecessary mipmap softness.
@@ -123,7 +135,7 @@
     gl.uniform2f(gl.getUniformLocation(program, 'u_origin'), left, bottom);
     gl.uniform1i(gl.getUniformLocation(program, 'u_map'), 0);
     gl.uniform1f(gl.getUniformLocation(program, 'u_initial_phase'),
-                 merged ? 0.83 : cassini ? 0.36 : 0.645);
+                 phaseOverride ?? (merged ? 0.83 : cassini ? 0.36 : 0.645));
     gl.uniform1f(gl.getUniformLocation(program, 'u_polar_limit'),
                  mapName === 'hubble' ? 0.058 : 0.001);
     gl.uniform1f(gl.getUniformLocation(program, 'u_planetographic'),
@@ -138,18 +150,71 @@
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
     const image = new Image();
-    image.onload = () => {
+    image.onload = async () => {
       gl.bindTexture(gl.TEXTURE_2D, map);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB8, gl.RGB,
                     gl.UNSIGNED_BYTE, image);
       gl.generateMipmap(gl.TEXTURE_2D);
+      let savedTurns = 0;
+      let counterAvailable = false;
+      if (!demo) {
+        try {
+          const response = await fetch('rotation-count', { cache: 'no-store' });
+          if (response.ok) {
+            const data = await response.json();
+            if (Number.isSafeInteger(data.completed_turns) && data.completed_turns >= 0) {
+              savedTurns = data.completed_turns;
+              counterAvailable = true;
+            }
+          }
+        } catch (error) {
+          // The standalone preview server does not persist wallpaper state.
+        }
+      }
+      const counterSession = crypto.randomUUID();
+      let acknowledgedTurns = 0;
+      let pendingSave = false;
+      let displayedTurns = -1;
+      function recordTurns(completed) {
+        const total = savedTurns + completed;
+        if (total !== displayedTurns) {
+          rotationCount.textContent = total.toLocaleString('en-US');
+          displayedTurns = total;
+        }
+        if (!counterAvailable || completed <= acknowledgedTurns || pendingSave) return;
+        pendingSave = true;
+        fetch('rotation-count', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session: counterSession, completed }),
+          keepalive: true
+        }).then(response => {
+          if (!response.ok) throw new Error('Unable to save the rotation count');
+          acknowledgedTurns = Math.max(acknowledgedTurns, completed);
+        }).catch(() => {
+          // Retry on the next draw; the server treats repeated values as one turn.
+        }).finally(() => { pendingSave = false; });
+      }
       const start = performance.now();
-      // System III sidereal spin: 9 h 55 m 30 s. Demo mode makes it visible.
+      // Base System III period: 9 h 55 m 30 s. The desktop multiplier speeds it up.
       const periodMs = demo ? 30000 : (9 * 3600 + 55 * 60 + 30) * 10;
+      let previousTurn = null;
+      let previousDrawTime = null;
+      let completedTurns = 0;
       function draw(now = performance.now()) {
-        const turn = ((now - start) % periodMs) / periodMs;
+        const elapsed = Math.max(0, now - start);
+        const turn = (elapsed % periodMs) / periodMs;
+        // Crossing from the end of the circle back to its initial orientation
+        // is the only event that advances the counter.
+        // A long rendering gap provides no evidence that the starting angle
+        // was actually passed on screen, so resume from the newly seen angle.
+        if (previousTurn !== null && now - previousDrawTime < 2000 &&
+            previousTurn - turn > 0.5) completedTurns += 1;
+        previousTurn = turn;
+        previousDrawTime = now;
         gl.uniform1f(rotationLocation, turn);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
+        recordTurns(completedTurns);
       }
       draw(start);
       // Fast motion follows display refresh. When Chromium treats the desktop
@@ -162,7 +227,11 @@
         async function updatePlaybackState() {
           try {
             const response = await fetch('playback', { cache: 'no-store' });
-            if (response.ok) paused = (await response.json()).paused;
+            if (response.ok) {
+              const nextPaused = (await response.json()).paused;
+              if (nextPaused !== paused) previousTurn = null;
+              paused = nextPaused;
+            }
           } catch (error) {
             paused = false;
           }
