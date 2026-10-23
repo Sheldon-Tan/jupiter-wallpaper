@@ -5,7 +5,7 @@ import numpy as np
 from PIL import Image
 
 
-ASSETS = Path(__file__).resolve().parent / "assets"
+ASSETS = Path(__file__).resolve().parent.parent / "assets"
 MAPS = (
     ("PIA07782_Cassini.tif", "jupiter_cassini_2000.png"),
     ("Hubble_Jupiter_color_global_map_2015a.tif", "jupiter_hubble_2015.png"),

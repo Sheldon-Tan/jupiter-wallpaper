@@ -1,0 +1,89 @@
+/* 页面样式：只作用于 index.html 里的几个覆盖层。 */
+
+html, body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: #000;
+}
+
+canvas { display: block; position: fixed; }
+
+/* 底部“已自转 N 次”的文字。 */
+#rotation-caption {
+  position: fixed;
+  left: 50%;
+  bottom: clamp(30px, 5.3vh, 82px);
+  transform: translateX(-50%);
+  z-index: 1;
+  width: max-content;
+  max-width: calc(100vw - 32px);
+  color: #c8bdac;
+  font: 400 clamp(17px, 1.1vw, 27px)/1.35 Constantia, "Palatino Linotype", Georgia, serif;
+  letter-spacing: .045em;
+  text-align: center;
+  text-shadow: 0 2px 12px #000;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+#rotation-caption::before {
+  content: "";
+  display: block;
+  width: 90px;
+  height: 1px;
+  margin: 0 auto 17px;
+  background: linear-gradient(90deg, transparent, #ac9575, transparent);
+}
+
+#rotation-count {
+  color: #f0dfc2;
+  font-weight: 600;
+  font-variant-numeric: lining-nums tabular-nums;
+}
+
+@media (max-width: 600px) {
+  #rotation-caption { font-size: 15px; letter-spacing: .015em; }
+  #rotation-caption::before { margin-bottom: 10px; }
+}
+
+/* 左下角状态行：只在加速预览或出错时显示。 */
+#status {
+  position: fixed;
+  left: 24px;
+  bottom: 20px;
+  color: #d7e0f0;
+  font: 14px/1.5 system-ui, sans-serif;
+  text-shadow: 0 1px 4px #000;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .2s;
+}
+
+body.preview #status,
+body.error #status { opacity: .9; }
+
+/* Ctrl+Alt+J 之后的短暂确认条：壁纸窗口没有焦点，弹不出系统提示。 */
+#mode-toast {
+  position: fixed;
+  left: 50%;
+  top: clamp(26px, 4.2vh, 62px);
+  transform: translateX(-50%);
+  z-index: 2;
+  padding: 9px 24px 10px;
+  border: 1px solid rgba(202, 184, 156, .38);
+  border-radius: 999px;
+  background: rgba(10, 12, 16, .68);
+  color: #f0dfc2;
+  font: 500 clamp(15px, .95vw, 21px)/1.2 Constantia, "Palatino Linotype", Georgia, serif;
+  letter-spacing: .14em;
+  white-space: nowrap;
+  text-shadow: 0 1px 8px #000;
+  opacity: 0;
+  transition: opacity .35s ease;
+  pointer-events: none;
+  backdrop-filter: blur(3px);
+}
+
+#mode-toast.show { opacity: .95; }

@@ -1,15 +1,15 @@
 /* Real-time Jovian atmospheric flow for the Jupiter wallpaper.
  *
- * The planet geometry, lighting and rotation counter stay in wallpaper.js.
- * This file only changes how the global map is sampled: the lookup point is
- * displaced by a wind field instead of moving as one rigid texture.
+ * This file is the model: wind data, vortex table, the GLSL displacement
+ * function and the two small lookup textures it needs.  It knows nothing about
+ * the canvas, the DOM or the rotation counter -- js/scene.js drives it.
  *
  * Three effects, cheapest first:
  *   1. Zonal jets  - u(latitude) from Jupiter's measured jet structure shears
  *                    the photographed cloud deck.  The displacement is bounded
  *                    so a still photograph never winds itself into oblivion.
  *   2. Vortices    - analytic elliptical swirls centred on the Great Red Spot
- *                    and the white ovals.  Rotation is periodic, so it can run
+ *                    and the white ovals.  The twist is periodic, so it can run
  *                    for weeks without accumulating error.
  *   3. Tracers     - a precomputed curl-noise field streaming with the local
  *                    jet, giving filaments and eddies inside the bands.
@@ -17,33 +17,31 @@
  * Everything is a pure function of the simulated time: no feedback buffers, so
  * the wallpaper is deterministic, never blurs, and costs two extra texture
  * fetches per pixel.
+ *
+ * Tuning lives in js/settings.js (`atmosphere` section), not here.
  */
 window.JupiterAtmosphere = (function () {
   'use strict';
 
-  /* ------------------------------------------------------------------ *
-   * 用户可直接修改的设置（改完关闭壁纸再启动即可生效）
-   * ------------------------------------------------------------------ */
-  const CONFIG = {
-    // true = 开启实时气流与涡旋；false = 退回原来「整张图刚性自转」的效果。
-    // 运行中也可以随时切换：双击 toggle_weather.cmd，或按 Ctrl+Alt+J。
-    LIVE_WEATHER: true,
-
-    // 示踪流的相对速度。默认 2.5 与当前「约 36 秒自转一周」的桌面速度相称；
-    // 若把自转调慢 10 倍（`periodMs` 乘 10），把它也调小 10 倍即可保持同样的观感。
-    TRACER_SPEED: 2.5,
-
-    // 云顶明暗对比。实时模式下由示踪场产生的亮度起伏强度，0 = 完全不用，
-    // 0.5 左右比较自然，超过 1.0 会像电视雪花。
-    CONTRAST: 0.5,
-
-    // 涡旋扭转幅度倍率。1.0 = 大红斑内部与周围云带来回扭转约 ±31°（约 170 秒
-    // 一个来回）；这是可回退的摆动，不会把贴图越卷越紧。
-    VORTEX_SPIN: 1.0,
-
-    // 湍流形变强度。「云带边缘被拉扯得多厉害」，0.6 温和，1.5 剧烈。
-    TURBULENCE: 1.0,
+  // Fallback values, used when settings.js is missing or a field is absent.
+  const DEFAULTS = {
+    live: true,
+    tracerSpeed: 2.5,
+    contrast: 0.5,
+    vortexSpin: 1.0,
+    turbulence: 1.0,
   };
+
+  function readSettings() {
+    const configured = (window.JUPITER_SETTINGS && window.JUPITER_SETTINGS.atmosphere) || {};
+    return {
+      live: configured.live !== false,
+      tracerSpeed: Number.isFinite(configured.tracerSpeed) ? configured.tracerSpeed : DEFAULTS.tracerSpeed,
+      contrast: Number.isFinite(configured.contrast) ? configured.contrast : DEFAULTS.contrast,
+      vortexSpin: Number.isFinite(configured.vortexSpin) ? configured.vortexSpin : DEFAULTS.vortexSpin,
+      turbulence: Number.isFinite(configured.turbulence) ? configured.turbulence : DEFAULTS.turbulence,
+    };
+  }
 
   /* ------------------------------------------------------------------ *
    * Jupiter zonal wind profile, u(latitude) in m/s (System III, +eastward).
@@ -346,6 +344,7 @@ window.JupiterAtmosphere = (function () {
    * Public factory
    * ------------------------------------------------------------------ */
   function create(gl, program, mapName) {
+    const config = readSettings();
     const previousFlip = gl.getParameter(gl.UNPACK_FLIP_Y_WEBGL);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
 
@@ -362,7 +361,7 @@ window.JupiterAtmosphere = (function () {
       vortexA[index * 4 + 0] = vortex.u;
       vortexA[index * 4 + 1] = vortex.v;
       vortexA[index * 4 + 2] = vortex.rx;
-      vortexA[index * 4 + 3] = (vortex.twist || 0.6) * (vortex.spin || 1) * CONFIG.VORTEX_SPIN;
+      vortexA[index * 4 + 3] = (vortex.twist || 0.6) * (vortex.spin || 1) * config.vortexSpin;
       vortexB[index * 4 + 0] = vortex.ry;
       vortexB[index * 4 + 1] = vortex.period;
     });
@@ -388,18 +387,18 @@ window.JupiterAtmosphere = (function () {
     gl.activeTexture(gl.TEXTURE0);
     gl.uniform1i(locations.wind, 1);
     gl.uniform1i(locations.tracer, 2);
-    gl.uniform1f(locations.turbulence, CONFIG.TURBULENCE);
-    gl.uniform1f(locations.contrast, CONFIG.CONTRAST);
-    gl.uniform1f(locations.tracerSpeed, CONFIG.TRACER_SPEED);
+    gl.uniform1f(locations.turbulence, config.turbulence);
+    gl.uniform1f(locations.contrast, config.contrast);
+    gl.uniform1f(locations.tracerSpeed, config.tracerSpeed);
     gl.uniform4fv(locations.vortexA, vortexA);
     gl.uniform4fv(locations.vortexB, vortexB);
 
-    let live = CONFIG.LIVE_WEATHER ? 1 : 0;
+    let live = config.live ? 1 : 0;
     gl.uniform1f(locations.live, live);
     gl.uniform1f(locations.flowTime, 0);
 
     return {
-      config: CONFIG,
+      config: config,
       get live() { return live > 0.5; },
       setLive(value) {
         const next = value ? 1 : 0;
@@ -415,5 +414,5 @@ window.JupiterAtmosphere = (function () {
     };
   }
 
-  return { CONFIG: CONFIG, GLSL: GLSL, create: create, PROFILE: PROFILE };
+  return { GLSL: GLSL, create: create, PROFILE: PROFILE };
 })();

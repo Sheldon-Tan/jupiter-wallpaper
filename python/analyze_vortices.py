@@ -4,7 +4,7 @@ The shader places swirls at fixed texture coordinates, so those coordinates have
 to be measured from the actual maps instead of assumed.  This tool reports, for
 each map, the most contrasty oval in a few latitude bands, in texture uv
 (u = x / width, v = 0 at the south pole, 1 at the north pole) -- the same
-convention `atmosphere.js` uses for `VORTICES`.
+convention `js/atmosphere.js` uses for `VORTICES`.
 
 It is a rough finder: verify a reported centre on screen with
 `python render_preview.py cassini 0.36 static 0 "mark=u,v"`.
@@ -16,7 +16,7 @@ import sys
 import numpy as np
 from PIL import Image
 
-ASSETS = Path(__file__).resolve().parent / "assets"
+ASSETS = Path(__file__).resolve().parent.parent / "assets"
 MAPS = {
     "cassini": "jupiter_cassini_2000.png",
     "hubble": "jupiter_hubble_2015.png",

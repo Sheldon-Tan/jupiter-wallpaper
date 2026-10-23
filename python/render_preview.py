@@ -1,11 +1,13 @@
-"""Render one real 4K frame with local Chrome for visual quality checks.
+"""Render one real frame with local Chrome for visual quality checks.
 
 Usage:
-    python render_preview.py [cassini|hubble|merged] [phase] [live|static] [flow]
+    python render_preview.py [cassini|hubble|merged] [phase] [live|static] [flow] [extra] [WxH]
 
     phase  starting longitude, 0..1
     live   live atmosphere on (default) or static rigid rotation
     flow   freeze the atmosphere at this many simulated seconds
+    extra  extra query string, e.g. "turn=0.9912" or "mark=0.3688,0.3792"
+    WxH    window size, default 3840x2160
 """
 
 import http.server
@@ -17,10 +19,11 @@ import sys
 import tempfile
 import threading
 
-from wallpaper_host import chrome_path
+from host_win32 import chrome_path
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
+OUTPUTS = ROOT / "previews"
 
 
 def main():
@@ -29,7 +32,7 @@ def main():
             pass
 
         def end_headers(self):
-            # Headless Chrome must never reuse a cached shader between runs.
+            # Headless Chrome must never reuse a cached script between runs.
             self.send_header("Cache-Control", "no-store, must-revalidate")
             super().end_headers()
 
@@ -55,7 +58,8 @@ def main():
     suffix += f"_flow{flow:g}" if flow is not None else ""
     suffix += f"_extra{extra.replace('=', '-').replace(',', '_')}" if extra else ""
     suffix += f"_{width}x{height}" if (width, height) != (3840, 2160) else ""
-    output = ROOT / f"preview_{mode}{suffix}_4k.png"
+    OUTPUTS.mkdir(exist_ok=True)
+    output = OUTPUTS / f"preview_{mode}{suffix}_4k.png"
     url = (f"http://127.0.0.1:{server.server_address[1]}/?map={mode}"
            + (f"&phase={phase}" if phase is not None else "")
            + ("&live=0" if live == "static" else "")

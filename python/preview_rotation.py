@@ -5,7 +5,7 @@ from pathlib import Path
 import webbrowser
 
 
-state_file = Path(__file__).resolve().parent / ".wallpaper-state.json"
+state_file = Path(__file__).resolve().parent.parent / "runtime" / ".wallpaper-state.json"
 if not state_file.exists():
     raise SystemExit("Start the wallpaper first.")
 state = json.loads(state_file.read_text(encoding="utf-8"))

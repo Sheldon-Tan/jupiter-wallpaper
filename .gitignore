@@ -1,25 +1,19 @@
-# Browser profile and live wallpaper state
-.browser-profile/
-.wallpaper-state.json
-.rotation-count.json*
-rotation-count.json*
-.live-weather.json*
-.stop
-wallpaper.log
+# 运行时产物：浏览器配置、窗口状态、计数、开关、日志
+/runtime/
 
-# Generated preview images
-.png
+# 生成的预览图（演示 GIF 保留在 previews/ 里）
+/previews/*.png
 
-# Downloaded source maps and generated browser textures
+# 下载的原始贴图与生成的播放纹理
 /assets/
 
-# Python caches and local environments
+# Python 缓存与虚拟环境
 __pycache__/
 *.py[cod]
 .venv/
 venv/
 
-# Editor and Windows local files
+# 编辑器与 Windows 本地文件
 .idea/
 .vscode/
 Thumbs.db

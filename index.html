@@ -5,77 +5,20 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="icon" href="data:,">
   <title>Jupiter Wallpaper</title>
-  <style>
-    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #000; }
-    canvas { display: block; position: fixed; }
-    #rotation-caption {
-      position: fixed;
-      left: 50%;
-      bottom: clamp(30px, 5.3vh, 82px);
-      transform: translateX(-50%);
-      z-index: 1;
-      width: max-content;
-      max-width: calc(100vw - 32px);
-      color: #c8bdac;
-      font: 400 clamp(17px, 1.1vw, 27px)/1.35 Constantia, "Palatino Linotype", Georgia, serif;
-      letter-spacing: .045em;
-      text-align: center;
-      text-shadow: 0 2px 12px #000;
-      pointer-events: none;
-      white-space: nowrap;
-    }
-    #rotation-caption::before {
-      content: "";
-      display: block;
-      width: 90px;
-      height: 1px;
-      margin: 0 auto 17px;
-      background: linear-gradient(90deg, transparent, #ac9575, transparent);
-    }
-    #rotation-count {
-      color: #f0dfc2;
-      font-weight: 600;
-      font-variant-numeric: lining-nums tabular-nums;
-    }
-    @media (max-width: 600px) {
-      #rotation-caption { font-size: 15px; letter-spacing: .015em; }
-      #rotation-caption::before { margin-bottom: 10px; }
-    }
-    #status { position: fixed; left: 24px; bottom: 20px; color: #d7e0f0;
-      font: 14px/1.5 system-ui, sans-serif; text-shadow: 0 1px 4px #000;
-      opacity: 0; pointer-events: none; transition: opacity .2s; }
-    body.preview #status, body.error #status { opacity: .9; }
-    /* Short-lived confirmation after Ctrl+Alt+J, so the switch is visible
-       even while the wallpaper window itself has no focus. */
-    #mode-toast {
-      position: fixed;
-      left: 50%;
-      top: clamp(26px, 4.2vh, 62px);
-      transform: translateX(-50%);
-      z-index: 2;
-      padding: 9px 24px 10px;
-      border: 1px solid rgba(202, 184, 156, .38);
-      border-radius: 999px;
-      background: rgba(10, 12, 16, .68);
-      color: #f0dfc2;
-      font: 500 clamp(15px, .95vw, 21px)/1.2 Constantia, "Palatino Linotype", Georgia, serif;
-      letter-spacing: .14em;
-      white-space: nowrap;
-      text-shadow: 0 1px 8px #000;
-      opacity: 0;
-      transition: opacity .35s ease;
-      pointer-events: none;
-      backdrop-filter: blur(3px);
-    }
-    #mode-toast.show { opacity: .95; }
-  </style>
+  <link rel="stylesheet" href="css/wallpaper.css">
 </head>
 <body>
   <canvas id="sky" aria-label="航天器全球影像纹理的旋转木星"></canvas>
   <div id="rotation-caption" aria-live="polite">Your Jupiter has rotated <span id="rotation-count">…</span> times.</div>
   <div id="status"></div>
   <div id="mode-toast" role="status" aria-live="polite"></div>
-  <script src="atmosphere.js"></script>
-  <script src="wallpaper.js"></script>
+
+  <!-- 加载顺序就是依赖顺序：参数 → 模型 → 渲染 → 计数 → 开关 → 编排 -->
+  <script src="js/settings.js"></script>
+  <script src="js/atmosphere.js"></script>
+  <script src="js/scene.js"></script>
+  <script src="js/rotation.js"></script>
+  <script src="js/live-mode.js"></script>
+  <script src="js/wallpaper.js"></script>
 </body>
 </html>
