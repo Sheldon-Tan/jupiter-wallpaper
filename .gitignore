@@ -1,0 +1,23 @@
+# Browser profile and live wallpaper state
+.browser-profile/
+.wallpaper-state.json
+.stop
+wallpaper.log
+
+# Generated preview images
+preview_*_4k.png
+
+# Downloaded source maps and generated browser textures
+/assets/
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Editor and Windows local files
+.idea/
+.vscode/
+Thumbs.db
+Desktop.ini
