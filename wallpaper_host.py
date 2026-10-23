@@ -18,14 +18,24 @@ import sys
 import threading
 import time
 from urllib.parse import urlsplit
+import urllib.request
 
 
 ROOT = Path(__file__).resolve().parent
 STATE = ROOT / ".wallpaper-state.json"
 STOP = ROOT / ".stop"
 LOG = ROOT / "wallpaper.log"
-ROTATION_COUNT = ROOT / ".rotation-count.json"
-ROTATION_COUNT_TMP = ROOT / ".rotation-count.json.tmp"
+ROTATION_COUNT = ROOT / "rotation-count.json"
+ROTATION_COUNT_TMP = ROOT / "rotation-count.json.tmp"
+LEGACY_ROTATION_COUNT = ROOT / ".rotation-count.json"
+LIVE_STATE = ROOT / ".live-weather.json"
+# Global switch for the live atmosphere.  Ctrl+Alt+J works from any window.
+HOTKEY_ID = 0xB001
+WM_HOTKEY = 0x0312
+MOD_ALT = 0x0001
+MOD_CONTROL = 0x0002
+MOD_NOREPEAT = 0x4000
+VK_J = 0x4A
 USER32 = ctypes.windll.user32
 USER32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
 USER32.FindWindowW.restype = wintypes.HWND
@@ -54,7 +64,18 @@ USER32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
 USER32.GetForegroundWindow.restype = wintypes.HWND
 USER32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
 USER32.GetWindowRect.restype = wintypes.BOOL
+USER32.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+USER32.GetClientRect.restype = wintypes.BOOL
+USER32.ClientToScreen.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.POINT)]
+USER32.ClientToScreen.restype = wintypes.BOOL
 USER32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+USER32.RegisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.UINT, wintypes.UINT]
+USER32.RegisterHotKey.restype = wintypes.BOOL
+USER32.UnregisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int]
+USER32.UnregisterHotKey.restype = wintypes.BOOL
+USER32.PeekMessageW.argtypes = [ctypes.POINTER(wintypes.MSG), wintypes.HWND,
+                                wintypes.UINT, wintypes.UINT, wintypes.UINT]
+USER32.PeekMessageW.restype = wintypes.BOOL
 
 
 def desktop_obscured(wallpaper_hwnd: int, width: int, height: int) -> bool:
@@ -82,15 +103,16 @@ def log(message: str) -> None:
 
 
 def load_rotation_count() -> int:
-    if not ROTATION_COUNT.exists():
+    path = ROTATION_COUNT if ROTATION_COUNT.exists() else LEGACY_ROTATION_COUNT
+    if not path.exists():
         return 0
     try:
-        turns = json.loads(ROTATION_COUNT.read_text(encoding="utf-8"))["completed_turns"]
+        turns = json.loads(path.read_text(encoding="utf-8"))["completed_turns"]
         if type(turns) is int and turns >= 0:
             return turns
     except (OSError, ValueError, KeyError, TypeError):
         pass
-    raise ValueError(f"计数文件无效：{ROTATION_COUNT}")
+    raise ValueError(f"计数文件无效：{path}")
 
 
 def save_rotation_count(turns: int) -> None:
@@ -99,10 +121,38 @@ def save_rotation_count(turns: int) -> None:
     ROTATION_COUNT_TMP.replace(ROTATION_COUNT)
 
 
+def load_live(default: bool = True) -> bool:
+    """Read the persisted live-weather switch; atmosphere.js holds the default."""
+    try:
+        value = json.loads(LIVE_STATE.read_text(encoding="utf-8"))["live"]
+        if type(value) is bool:
+            return value
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return default
+
+
+def save_live(live: bool) -> None:
+    temporary = LIVE_STATE.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps({"live": bool(live)}) + "\n", encoding="utf-8")
+    temporary.replace(LIVE_STATE)
+
+
+def set_live(live: bool, persist: bool = True) -> bool:
+    WallpaperFiles.live_mode = bool(live)
+    if persist:
+        try:
+            save_live(live)
+        except OSError as error:
+            log(f"Live switch save failed: {error!r}")
+    log(f"Live atmosphere {'on' if live else 'off'}")
+    return WallpaperFiles.live_mode
+
+
 class WallpaperFiles(http.server.SimpleHTTPRequestHandler):
     """Serve wallpaper assets and the local playback state."""
 
-    ALLOWED = {"/", "/index.html", "/wallpaper.js",
+    ALLOWED = {"/", "/index.html", "/wallpaper.js", "/atmosphere.js",
                "/assets/jupiter_cassini_2000.png",
                "/assets/jupiter_hubble_2015.png",
                "/assets/jupiter_cassini_juno_8k.png"}
@@ -112,6 +162,7 @@ class WallpaperFiles(http.server.SimpleHTTPRequestHandler):
     rotation_total = 0
     rotation_sessions: dict[str, int] = {}
     rotation_lock = threading.Lock()
+    live_mode = True
 
     def send_json(self, data: dict) -> None:
         body = json.dumps(data).encode("utf-8")
@@ -134,13 +185,20 @@ class WallpaperFiles(http.server.SimpleHTTPRequestHandler):
                                       self.screen_height)
             self.send_json({"paused": paused})
             return
+        if path == "/live":
+            self.send_json({"live": type(self).live_mode})
+            return
         if path not in self.ALLOWED:
             self.send_error(404)
             return
         super().do_GET()
 
     def do_POST(self):
-        if urlsplit(self.path).path != "/rotation-count":
+        path = urlsplit(self.path).path
+        if path == "/live":
+            self.handle_live()
+            return
+        if path != "/rotation-count":
             self.send_error(404)
             return
         if self.headers.get("Content-Type", "").split(";", 1)[0] != "application/json":
@@ -174,6 +232,23 @@ class WallpaperFiles(http.server.SimpleHTTPRequestHandler):
                 cls.rotation_total = total
                 cls.rotation_sessions[session] = completed
             self.send_json({"completed_turns": cls.rotation_total})
+
+    def handle_live(self):
+        """Accept {"live": bool} from the page, the toggle script or a hotkey."""
+        if self.headers.get("Content-Type", "").split(";", 1)[0] != "application/json":
+            self.send_error(415)
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 0 < length <= 64:
+                raise ValueError("invalid length")
+            live = json.loads(self.rfile.read(length))["live"]
+            if type(live) is not bool:
+                raise ValueError("invalid switch")
+        except (ValueError, KeyError, TypeError, UnicodeDecodeError):
+            self.send_error(400)
+            return
+        self.send_json({"live": set_live(live)})
 
     def log_message(self, format, *args):
         pass
@@ -268,13 +343,34 @@ def attach(hwnd: int, width: int, height: int) -> None:
     if not USER32.SetParent(hwnd, target):
         raise OSError("无法将浏览器窗口放到桌面图标后面")
     # Chromium draws its own 31 px caption even after the Win32 frame is removed.
-    # Move that caption just outside the parent and preserve a full-screen client area.
-    USER32.SetWindowPos(hwnd, 0, 0, -31, width, height + 31,
-                         SWP_FRAMECHANGED | SWP_SHOWWINDOW)
-    log(f"Attached hwnd={hwnd} parent={target}, size={width}x{height}")
+    # The browser can retain an invisible side/bottom border, so size the actual
+    # client area to the screen rather than assuming the outer window is enough.
+    if not USER32.SetWindowPos(hwnd, 0, 0, -31, width, height + 31,
+                              SWP_FRAMECHANGED | SWP_SHOWWINDOW):
+        raise OSError("无法设置壁纸窗口尺寸")
+    for _ in range(2):
+        window = wintypes.RECT()
+        client = wintypes.RECT()
+        origin = wintypes.POINT()
+        if not (USER32.GetWindowRect(hwnd, ctypes.byref(window)) and
+                USER32.GetClientRect(hwnd, ctypes.byref(client)) and
+                USER32.ClientToScreen(hwnd, ctypes.byref(origin))):
+            raise OSError("无法读取壁纸窗口尺寸")
+        left_gap = origin.x
+        right_gap = width - (origin.x + client.right)
+        bottom_gap = height - (origin.y + client.bottom)
+        if left_gap == right_gap == bottom_gap == 0:
+            break
+        if not USER32.SetWindowPos(hwnd, 0, window.left - left_gap, window.top,
+                                  window.right - window.left + left_gap + right_gap,
+                                  window.bottom - window.top + bottom_gap,
+                                  SWP_FRAMECHANGED | SWP_SHOWWINDOW):
+            raise OSError("无法校正壁纸窗口边界")
+    log(f"Attached hwnd={hwnd} parent={target}, client="
+        f"({origin.x},{origin.y})-{origin.x + client.right},{origin.y + client.bottom}")
 
 
-def run(map_name: str = "cassini") -> None:
+def run(map_name: str = "cassini", live: bool | None = None) -> None:
     if STATE.exists():
         try:
             old_hwnd = json.loads(STATE.read_text(encoding="utf-8"))["hwnd"]
@@ -286,7 +382,16 @@ def run(map_name: str = "cassini") -> None:
     STOP.unlink(missing_ok=True)
     os.chdir(ROOT)
     WallpaperFiles.rotation_total = load_rotation_count()
+    if not ROTATION_COUNT.exists():
+        save_rotation_count(WallpaperFiles.rotation_total)
     WallpaperFiles.rotation_sessions = {}
+    # An explicit command-line choice wins over the saved switch.
+    WallpaperFiles.live_mode = load_live(True) if live is None else bool(live)
+    if live is not None:
+        try:
+            save_live(live)
+        except OSError as error:
+            log(f"Live switch save failed: {error!r}")
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), WallpaperFiles)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     port = server.server_address[1]
@@ -327,9 +432,23 @@ def run(map_name: str = "cassini") -> None:
         console = ctypes.windll.kernel32.GetConsoleWindow()
         if console:
             USER32.ShowWindow(console, 0)
+        # Ctrl+Alt+J toggles the live atmosphere from any application.  A
+        # message-only registration is enough: WM_HOTKEY is posted to this
+        # thread's queue and drained below.
+        if not USER32.RegisterHotKey(None, HOTKEY_ID,
+                                     MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_J):
+            log("Ctrl+Alt+J unavailable (already in use); use toggle_weather.cmd")
+        else:
+            log("Ctrl+Alt+J registered for the live atmosphere switch")
+        message = wintypes.MSG()
         while not STOP.exists() and USER32.IsWindow(hwnd):
-            time.sleep(0.5)
+            while USER32.PeekMessageW(ctypes.byref(message), None, 0, 0, 1):
+                if (message.message == WM_HOTKEY and
+                        int(message.wParam) == HOTKEY_ID):
+                    set_live(not WallpaperFiles.live_mode)
+            time.sleep(0.25)
     finally:
+        USER32.UnregisterHotKey(None, HOTKEY_ID)
         USER32.PostMessageW(hwnd, 0x0010, 0, 0) if hwnd and USER32.IsWindow(hwnd) else None
         try:
             process.wait(timeout=5)
@@ -341,8 +460,42 @@ def run(map_name: str = "cassini") -> None:
         log("Stopped")
 
 
+def request_live(port: int, live: bool) -> bool:
+    data = json.dumps({"live": live}).encode("utf-8")
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/live", data=data,
+        headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(request, timeout=3) as response:
+        return bool(json.loads(response.read())["live"])
+
+
+def toggle_live() -> None:
+    """Flip the live-atmosphere switch while the wallpaper keeps running."""
+    port = 0
+    if STATE.exists():
+        try:
+            port = int(json.loads(STATE.read_text(encoding="utf-8"))["port"])
+        except (OSError, ValueError, KeyError, TypeError):
+            port = 0
+    if port:
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/live",
+                                        timeout=3) as response:
+                current = bool(json.loads(response.read())["live"])
+            live = request_live(port, not current)
+            print(f"Live atmosphere {'on' if live else 'off'}.")
+            return
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            log(f"Toggle via running wallpaper failed: {error!r}")
+    live = not load_live(True)
+    save_live(live)
+    print(f"Live atmosphere {'on' if live else 'off'} "
+          "(wallpaper not running; setting saved).")
+
+
 def main() -> None:
-    if len(sys.argv) > 1 and sys.argv[1].lower() == "stop":
+    args = [argument.lower() for argument in sys.argv[1:]]
+    if "stop" in args:
         STOP.touch()
         for _ in range(30):
             if not STATE.exists():
@@ -350,11 +503,23 @@ def main() -> None:
             time.sleep(0.2)
         print("Wallpaper stopped." if not STATE.exists() else "Stop requested; please wait.")
         return
-    map_name = sys.argv[1].lower() if len(sys.argv) > 1 else "cassini"
-    if map_name not in ("cassini", "hubble", "merged"):
-        raise ValueError("Use cassini, hubble, merged, or stop")
+    if "toggle" in args:
+        toggle_live()
+        return
+    map_name = "cassini"
+    live = None
+    for argument in args:
+        if argument in ("cassini", "hubble", "merged"):
+            map_name = argument
+        elif argument == "live" or argument == "on":
+            live = True
+        elif argument in ("static", "off"):
+            live = False
+        else:
+            raise ValueError("用法：wallpaper_host.py [cassini|hubble|merged] "
+                             "[live|static] | toggle | stop")
     try:
-        run(map_name)
+        run(map_name, live)
     except Exception as error:
         log(f"ERROR: {error!r}")
         raise

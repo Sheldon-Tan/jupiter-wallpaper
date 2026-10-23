@@ -2,11 +2,13 @@
 .browser-profile/
 .wallpaper-state.json
 .rotation-count.json*
+rotation-count.json*
+.live-weather.json*
 .stop
 wallpaper.log
 
 # Generated preview images
-preview_*_4k.png
+.png
 
 # Downloaded source maps and generated browser textures
 /assets/
