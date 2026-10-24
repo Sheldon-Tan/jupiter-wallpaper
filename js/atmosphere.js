@@ -4,19 +4,12 @@
  * function and the two small lookup textures it needs.  It knows nothing about
  * the canvas, the DOM or the rotation counter -- js/scene.js drives it.
  *
- * Three effects, cheapest first:
- *   1. Zonal jets  - u(latitude) from Jupiter's measured jet structure shears
- *                    the photographed cloud deck.  The displacement is bounded
- *                    so a still photograph never winds itself into oblivion.
- *   2. Vortices    - analytic elliptical swirls centred on the Great Red Spot
- *                    and the white ovals.  The twist is periodic, so it can run
- *                    for weeks without accumulating error.
- *   3. Tracers     - a precomputed curl-noise field streaming with the local
- *                    jet, giving filaments and eddies inside the bands.
+ * The spacecraft photograph is never geometrically warped.  The zonal winds
+ * and vortex paths advect only a faint procedural tracer layer, so measured
+ * belts and long-lived storms retain their actual shapes after many turns.
  *
  * Everything is a pure function of the simulated time: no feedback buffers, so
- * the wallpaper is deterministic, never blurs, and costs two extra texture
- * fetches per pixel.
+ * the wallpaper is deterministic and does not resample its source photograph.
  *
  * Tuning lives in js/settings.js (`atmosphere` section), not here.
  */
@@ -26,10 +19,11 @@ window.JupiterAtmosphere = (function () {
   // Fallback values, used when settings.js is missing or a field is absent.
   const DEFAULTS = {
     live: true,
-    tracerSpeed: 2.5,
-    contrast: 0.5,
+    tracerSpeed: 2.0,
+    contrast: 0.20,
     vortexSpin: 1.0,
-    turbulence: 1.0,
+    turbulence: 0.9,
+    geometry: 1.0,
   };
 
   function readSettings() {
@@ -38,6 +32,7 @@ window.JupiterAtmosphere = (function () {
       live: configured.live !== false,
       tracerSpeed: Number.isFinite(configured.tracerSpeed) ? configured.tracerSpeed : DEFAULTS.tracerSpeed,
       contrast: Number.isFinite(configured.contrast) ? configured.contrast : DEFAULTS.contrast,
+      geometry: Number.isFinite(configured.geometry) ? configured.geometry : DEFAULTS.geometry,
       vortexSpin: Number.isFinite(configured.vortexSpin) ? configured.vortexSpin : DEFAULTS.vortexSpin,
       turbulence: Number.isFinite(configured.turbulence) ? configured.turbulence : DEFAULTS.turbulence,
     };
@@ -117,6 +112,7 @@ window.JupiterAtmosphere = (function () {
     uniform float u_flowTime;
     uniform float u_live;
     uniform float u_turbulence;
+    uniform float u_geometry;
     uniform float u_contrast;
     uniform float u_tracerSpeed;
     // xy = centre in texture uv, z = longitude radius, w = peak twist (rad)
@@ -124,23 +120,25 @@ window.JupiterAtmosphere = (function () {
     // x = latitude radius, y = twist period (s)
     uniform vec4 u_vortexB[${MAX_VORTICES}];
 
-    // Returns the displaced map lookup in .xy and a cloud density in .z.
+    // Returns the map lookup in .xy and a cloud density in .z.
+    //
+    // The .xy offset from uv is *bounded*: every term is a sine, a smoothstep
+    // falloff or a clamped sum, so no amount of running time can accumulate
+    // shear, wind the photograph into a spiral or smear a band.  Set
+    // u_geometry to 0 to keep the photographed map completely rigid.
     vec3 jupiterAtmosphere(vec2 uv, float t) {
       vec4 wind = texture(u_wind, vec2(uv.y, 0.5));
       float speed = wind.r * 2.0 - 1.0;              // u / 200 m/s
       float edge = wind.g;                            // activity at jet edges
       float phase = wind.b * 6.2831853;
 
-      // 1. The photographed deck churns back and forth inside each band.
-      //    A bounded displacement cannot accumulate, so the mosaic stays
-      //    recognisable for as long as the wallpaper runs.
-      float amp = 0.0042 * (0.35 + 0.65 * min(abs(speed) * 1.5, 1.0));
+      // 1. Zonal shear moves only the tracer above the photographed deck.
+      float amp = 0.0026 * (0.35 + 0.65 * min(abs(speed) * 1.5, 1.0));
       float omega = (0.05 + 0.06 * min(abs(speed), 1.0)) * sign(speed);
       float shear = -amp * sin(omega * t + phase);
 
-      // 2. Vortices twist their own clouds and drag the collar.  The twist is
-      //    a bounded oscillation, so a still mosaic never winds itself into a
-      //    spiral no matter how long the wallpaper runs.
+      // 2. Vortices guide tracers around measured storm centres. Using
+      //    fract() inside the sine keeps the argument small over long runs.
       vec2 vortex = vec2(0.0);
       for (int i = 0; i < ${MAX_VORTICES}; ++i) {
         vec4 a = u_vortexA[i];
@@ -148,27 +146,33 @@ window.JupiterAtmosphere = (function () {
         vec2 d = uv - a.xy;
         d.x -= floor(d.x + 0.5);                      // shortest way round
         vec2 e = d / vec2(a.z, u_vortexB[i].x);
-        // Flat core, soft rim: the oval keeps its shape while the collar is
-        // dragged around it, which reads like a real long-lived anticyclone.
+        // Compact falloff: exactly zero beyond 1.45 radii, so a vortex can
+        // never drag the rest of the hemisphere with it.
         float w = 1.0 - smoothstep(0.45, 1.45, length(e));
         float period = max(u_vortexB[i].y, 1.0);
-        float ang = a.w * sin(6.2831853 * t / period) * w;
+        float ang = a.w * sin(6.2831853 * fract(t / period)) * w;
         float c = cos(ang), s = sin(ang);
         vec2 r = vec2(c * e.x - s * e.y, s * e.x + c * e.y);
         vortex += (r - e) * vec2(a.z, u_vortexB[i].x);
       }
 
-      // 3. Passive tracers stream with the local zonal jet.  The field is
-      //    statistically homogeneous, so unbounded advection is safe here.
-      float adv = -0.00035 * speed * u_tracerSpeed * t;
-      vec2 p = vec2((uv.x + adv) * 2.0, uv.y * 7.0);
-      vec4 n1 = texture(u_tracer, p * 0.61);
-      vec4 n2 = texture(u_tracer, p * 0.37 + vec2(0.31, 0.67));
-      vec2 curl = n1.rg + n2.rg - 1.0;
-      float density = 0.62 * n1.b + 0.38 * n2.b;
+      // 3. Tracer layer: only the brightness moves with the wind.  Its clock is
+      //    wrapped by fract() so texture coordinates stay precise for days.
+      float adv = fract(-0.00005 * speed * u_tracerSpeed * t);
+      vec2 tracerUV = uv + vec2(adv + shear, 0.0) + vortex;
+      // LOD bias keeps the noise from aliasing into "brush strokes" on a
+      // 2560-wide screen, where one texel is only a couple of pixels.
+      float coarse = texture(u_tracer, tracerUV * vec2(2.0, 7.0), 1.2).b;
+      float fine = texture(u_tracer, tracerUV * vec2(4.0, 11.0) + vec2(0.31, 0.67), 1.8).b;
+      float sampleValue = 0.7 * coarse + 0.3 * fine;
+      float density = 0.5 + (sampleValue - 0.5)
+                            * min(u_turbulence, 2.0) * (0.45 + 0.55 * edge);
 
-      float warp = 0.0016 * u_turbulence * (0.35 + edge);
-      vec2 offset = vec2(shear, 0.0) + vortex + curl * warp;
+      // Bounded offset: 0.008 uv is about 2.9 degrees of longitude (~16 px on
+      // a 2560-wide screen).  u_geometry = 0 disables the geometric part and
+      // leaves only the moving brightness layer.
+      vec2 offset = clamp(vec2(shear, 0.0) + vortex,
+                          vec2(-0.008), vec2(0.008)) * u_geometry;
       return vec3(uv + offset, density);
     }
   `;
@@ -295,31 +299,12 @@ window.JupiterAtmosphere = (function () {
       }
     }
 
-    // Curl of the stream function gives a divergence-free swirl field.
-    const curlX = new Float32Array(width * height);
-    const curlY = new Float32Array(width * height);
-    let sum = 0;
-    for (let y = 0; y < height; y++) {
-      const up = ((y + 1) % height) * width;
-      const down = ((y - 1 + height) % height) * width;
-      for (let x = 0; x < width; x++) {
-        const left = (x - 1 + width) % width;
-        const right = (x + 1) % width;
-        const dx = (psi[y * width + right] - psi[y * width + left]) * 0.5;
-        const dy = (psi[up + x] - psi[down + x]) * 0.5;
-        curlX[y * width + x] = dy;
-        curlY[y * width + x] = -dx;
-        sum += dx * dx + dy * dy;
-      }
-    }
-    const rms = Math.sqrt(sum / (width * height)) * 2 + 1e-6;
-
+    // Only the scalar tracer density is needed; the spacecraft photograph
+    // is deliberately not displaced by a curl field.
     const pixels = new Uint8Array(width * height * 4);
     for (let i = 0; i < width * height; i++) {
-      const cx = Math.max(-1, Math.min(1, curlX[i] / rms));
-      const cy = Math.max(-1, Math.min(1, curlY[i] / rms));
-      pixels[i * 4 + 0] = Math.round((cx * 0.5 + 0.5) * 255);
-      pixels[i * 4 + 1] = Math.round((cy * 0.5 + 0.5) * 255);
+      pixels[i * 4 + 0] = 128;
+      pixels[i * 4 + 1] = 128;
       pixels[i * 4 + 2] = Math.round(Math.max(0, Math.min(1, psi[i])) * 255);
       pixels[i * 4 + 3] = 255;
     }
@@ -373,6 +358,7 @@ window.JupiterAtmosphere = (function () {
       flowTime: location('u_flowTime'),
       live: location('u_live'),
       turbulence: location('u_turbulence'),
+      geometry: location('u_geometry'),
       contrast: location('u_contrast'),
       tracerSpeed: location('u_tracerSpeed'),
       vortexA: location('u_vortexA[0]') || location('u_vortexA'),
@@ -389,6 +375,7 @@ window.JupiterAtmosphere = (function () {
     gl.uniform1i(locations.tracer, 2);
     gl.uniform1f(locations.turbulence, config.turbulence);
     gl.uniform1f(locations.contrast, config.contrast);
+    gl.uniform1f(locations.geometry, config.geometry);
     gl.uniform1f(locations.tracerSpeed, config.tracerSpeed);
     gl.uniform4fv(locations.vortexA, vortexA);
     gl.uniform4fv(locations.vortexB, vortexB);

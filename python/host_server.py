@@ -34,6 +34,13 @@ class WallpaperFiles(http.server.SimpleHTTPRequestHandler):
     live_mode = True
 
     # ---- 工具 ----------------------------------------------------------
+    def end_headers(self) -> None:
+        # 页面、脚本、贴图一律不缓存。否则改了 js/ 之后，重启壁纸仍可能跑
+        # Chrome 磁盘缓存里的旧着色器，看起来就像“算法自己跑坏了”。
+        if not any(b"Cache-Control" in line for line in self._headers_buffer):
+            self.send_header("Cache-Control", "no-store, must-revalidate")
+        super().end_headers()
+
     def send_json(self, data: dict) -> None:
         body = json.dumps(data).encode("utf-8")
         self.send_response(200)

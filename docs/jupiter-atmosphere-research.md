@@ -1,5 +1,14 @@
 # Jupiter Atmosphere Simulation — Research Report
 
+## Implementation note (2026-10-24)
+
+The stronger map-coordinate advection proposed below visibly distorted the
+spacecraft mosaic after several wallpaper rotations. The current shader keeps
+the observed image's UV coordinates fixed and advects only a faint procedural
+tracer layer using the approximate jet profile. This preserves the measured
+cloud belts and Great Red Spot. It is a visual indication of zonal flow, not
+a physical forecast or a numerical evolution of the photographed cloud deck.
+
 ## A. Existing open-source code
 
 | Repo / project | What it actually does | Stack, license, stars | Verdict |

@@ -47,7 +47,7 @@ def launch_browser(port: int, map_name: str) -> subprocess.Popen:
     return process
 
 
-def wait_for_window(process: subprocess.Popen, attempts: int = 100) -> int:
+def wait_for_window(process: subprocess.Popen, attempts: int = 150) -> int:
     hwnd = 0
     for attempt in range(attempts):
         hwnd = find_wallpaper_window()
@@ -59,6 +59,10 @@ def wait_for_window(process: subprocess.Popen, attempts: int = 100) -> int:
     return 0
 
 
+class AlreadyRunning(RuntimeError):
+    """The wallpaper is already attached to the desktop; nothing to do."""
+
+
 def run(map_name: str = "cassini", live: bool | None = None) -> None:
     if STATE.exists():
         try:
@@ -66,7 +70,7 @@ def run(map_name: str = "cassini", live: bool | None = None) -> None:
         except (OSError, ValueError, KeyError):
             old_hwnd = 0
         if old_hwnd and USER32.IsWindow(old_hwnd):
-            raise RuntimeError("壁纸已经运行。先执行 stop_wallpaper.cmd。")
+            raise AlreadyRunning("壁纸已经运行。先执行 stop_wallpaper.cmd。")
         STATE.unlink(missing_ok=True)
     STOP.unlink(missing_ok=True)
     os.chdir(ROOT)
@@ -198,6 +202,9 @@ def main() -> None:
     map_name, live = parse_arguments(arguments)
     try:
         run(map_name, live)
+    except AlreadyRunning:
+        # 开机自启与手动启动撞车时静默退出，不要弹出一屏 traceback。
+        log("Already running; autostart did nothing")
     except Exception as error:
         log(f"ERROR: {error!r}")
         raise

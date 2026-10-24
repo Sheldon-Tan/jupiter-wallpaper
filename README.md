@@ -18,6 +18,18 @@
 
 加速预览窗口里按 `L` 也能切换，左下角状态栏会显示“实时大气开/关”。URL 参数 `?live=0` / `?live=1` 可临时覆盖设置，便于做对比截图。
 
+## 开机自启
+
+双击 `scripts\install_autostart.cmd` 设为登录后自动启动，双击 `scripts\uninstall_autostart.cmd` 取消。
+
+- **原理**：在 `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup` 里写一个两行的 `jupiter-wallpaper.vbs`，它再调用仓库里的 `scripts\start_wallpaper_hidden.vbs`。启动逻辑仍留在仓库中，移动目录后重新执行一次 install 即可。
+- 不写注册表、不需要管理员权限；删掉那个 VBS 就等于取消。
+- 登录后先等约 20 秒，让桌面（Progman/WorkerW）与 Chrome 就绪，再以**隐藏窗口**启动，不会闪控制台。
+- 沿用上次的模式：要它开机就是实时模拟，先按 Ctrl+Alt+J 切到「开」，这个选择存在 `runtime/.live-weather.json` 里。
+- 如果壁纸已经在运行（例如你手动先开了），自启进程会在 0.3 秒内静默退出，不会开第二个，也不会弹错误框。
+- 想改等待时长：设置环境变量 `JUPITER_START_DELAY_MS`（毫秒），或直接改 `scripts\start_wallpaper_hidden.vbs` 里的 `delayMs = 20000`。
+- 查看状态：`python python\autostart.py status`。
+
 ## 现成方案调研
 
 动手前先检索了 GitHub 与图形学资料，看有没有“木星实时大气模拟”能直接拿来用。结论是**没有可作为本项目渲染层基础的现成代码**：
@@ -27,7 +39,7 @@
 - [huazhige/Ge-et-al-water-Jupiter](https://github.com/huazhige/Ge-et-al-water-Jupiter)、[JupiRSW](https://github.com/Adrien-Cb/JupiRSW)、[2021.JupiterPolarVortex](https://github.com/chengcli/2021.JupiterPolarVortex)：C++/Python 的深大气或浅水环流模式，做的是长时间积分的科研实验，输出不了 60 帧/秒的桌面壁纸。
 - SIGGRAPH 2015 的 [Wrangling a Gas Giant for Jupiter Ascending](https://history.siggraph.org/wp-content/uploads/2022/10/2015-Talks-Keip_Wrangling-a-Gas-Giant-for-Jupiter-Ascending.pdf)：电影里气态行星的做法（预先解算速度场，再做 Timeless Advection），思路可借，代码不公开。
 
-因此实现路线是：**保留原有单文件 WebGL2 管线与 NASA 贴图，只替换纹理采样点的算法**，把“整图刚性自转”换成“实测急流剖面 + 解析涡旋 + 旋度噪声示踪场”的位移，也就是实时图形学里成熟的域扭曲、旋度噪声与按纬度分层平流三件事。全部是时间的纯函数，不需要反馈缓冲，所以长时间运行不会累积模糊或漂移。
+因此实现路线是：**NASA 观测贴图始终按固定几何贴在球面上**；按纬度变化的急流和解析涡旋只驱动一层很弱的程序化示踪云纹。这个动效是风场的视觉示意，不是对木星云层的数值天气预报。全部是时间的纯函数，不使用反复回写的纹理缓冲；底图不会因为运行时间增加而被拉伸。
 
 风速与涡旋参数取自公开观测：赤道区被 ±7° 的东向急流夹住、赤道本身是局部极小；24°N 是木星最快的东向急流（1979 年约 180 m/s、1995 年约 140 m/s，后续加速期可超过 170 m/s）；大红斑位于 22.5°S，东西向约 1.6 万公里。参考 [Ingersoll et al. 2004, ch. 6](https://lasp.colorado.edu/mop/files/2015/08/jupiter_ch6-1.pdf)、[Porco et al. 2003](https://www.science.org/doi/10.1126/science.1080506)、[Sankar et al. 2021](https://arxiv.org/abs/2106.07809) 与 [BAA 木星喷流表](https://britastro.org/jupiter/reference/jup_jets/ref_jets.htm)。`js/atmosphere.js` 里的剖面是按这些锚点手工拟合的近似曲线，**不是逐点数字化数据**，只服务于视觉动效。
 
@@ -66,7 +78,7 @@ jupiter-wallpaper/
 │  └─ wallpaper.css       覆盖层样式（计数文字、状态行、开关提示）
 ├─ js/                    浏览器端
 │  ├─ settings.js         全部可调参数（贴图/场景/自转/大气/交互）
-│  ├─ atmosphere.js       大气模型：风速剖面、涡旋表、GLSL 位移函数、两张查表纹理
+│  ├─ atmosphere.js       大气动效：风速剖面、涡旋表、示踪云纹、两张查表纹理
 │  ├─ scene.js            WebGL2 渲染：球体反投影、光照、底图上传、draw()
 │  ├─ rotation.js         自转相位 +「已自转 N 次」计数 + 与宿主的读写
 │  ├─ live-mode.js        实时模拟开关：轮询 /live、POST、顶部提示、键盘 L
@@ -76,6 +88,7 @@ jupiter-wallpaper/
 │  ├─ host_win32.py       Win32：桌面层、窗口嵌入与尺寸校正、Chrome、热键
 │  ├─ host_server.py      本机 HTTP：页面白名单、计数、播放状态、实时开关
 │  ├─ host_common.py      路径、日志、两份 JSON 状态
+│  ├─ autostart.py        开机自启：写入/删除“启动”文件夹里的一行启动脚本
 │  ├─ prepare_textures.py NASA TIFF → 浏览器可用 PNG
 │  ├─ render_preview.py   无头 Chrome 渲染单帧预览
 │  ├─ preview_rotation.py 打开加速预览窗口
@@ -88,7 +101,10 @@ jupiter-wallpaper/
 │  ├─ stop_wallpaper.cmd           停止
 │  ├─ restart_wallpaper.cmd        重启（改完代码用）
 │  ├─ toggle_weather.cmd           切换实时模拟
-│  └─ preview_rotation.cmd         加速预览
+│  ├─ preview_rotation.cmd         加速预览
+│  ├─ install_autostart.cmd        设为开机自启
+│  ├─ uninstall_autostart.cmd      取消开机自启
+│  └─ start_wallpaper_hidden.vbs   无窗口启动（自启与手动都走它）
 ├─ assets/                贴图与生成的播放纹理（已 gitignore）
 ├─ docs/
 │  └─ jupiter-atmosphere-research.md   调研记录与数据出处
@@ -110,7 +126,7 @@ index.html
         ├─ 每帧   scene.draw(turn)
         │          片元着色器：屏幕像素 → 扁球体求交 → 经纬度 → uv
         │            ├─ u_live = 0：直接采样底图（刚性自转）
-        │            └─ u_live = 1：jupiterAtmosphere(uv, t) 位移后再采样
+        │            └─ u_live = 1：原坐标采样底图，叠加随风场流动的弱示踪层
         └─ 每 250 ms / 1 s：轮询开关与播放状态，暂停时也检查相位
 ```
 
@@ -130,6 +146,7 @@ index.html
 | `python/host_server.py` | 白名单静态文件 + 状态接口 | 窗口操作 |
 | `python/host_common.py` | 路径、日志、JSON 读写 | ctypes、HTTP |
 | `python/wallpaper_host.py` | 命令行解析、启动流程、停止清理 | 具体实现细节 |
+| `python/autostart.py` | 写入/删除/查看“启动”文件夹里的开机入口 | 窗口与 HTTP |
 
 ### 宿主端的五个本机接口
 
@@ -162,6 +179,7 @@ index.html
 | 着色器算法 | `js/scene.js` 的 `fragmentShader()`、`js/atmosphere.js` 的 `GLSL` |
 | 命令行与启动流程 | `python/wallpaper_host.py` |
 | HTTP 接口 | `python/host_server.py` |
+| 开机自启的等待时长 | `scripts/start_wallpaper_hidden.vbs` 的 `delayMs`（或环境变量 `JUPITER_START_DELAY_MS`） |
 
 ## 关键参数在哪里
 
@@ -176,17 +194,34 @@ index.html
 - **最低场景尺寸**：`scene.minWidth` / `scene.minHeight`，默认 3840×2160。提高会增加显卡负担，并不会提高屏幕的物理分辨率。
 - **贴图与起始经度**：`maps.<名字>.file` 与 `maps.<名字>.phase`（0.36 / 0.645 / 0.83）。后者是构图值，不对应此刻的天文经度。
 - **光照方向**：`scene.sun` 三个分量决定远处太阳方向；`scene.ambient` 与 `scene.diffuse` 控制明暗对比。
-- **纹理清晰度**：`scene.mipBias`，默认 `-0.5`。`js/scene.js` 用 `textureGrad` 从**未位移**的 `uv` 求导数并按 `2^mipBias` 缩放，所以云带被拉扯时 mipmap 不会突然变糊。
+- **纹理清晰度**：`scene.mipBias`，默认 `-0.5`。`js/scene.js` 用 `textureGrad` 从原始 `uv` 求导数并按 `2^mipBias` 缩放；实时动效也不改变底图采样坐标。
 
 ### 实时大气参数（`js/settings.js` → `atmosphere`）
 
 - `live`：默认是否开启；运行中请用 Ctrl+Alt+J 或 `scripts/toggle_weather.cmd`。
-- `tracerSpeed`：示踪场流速倍率，默认 2.5。它和自转速度是“观感搭配”关系：把自转调慢 10 倍，这里也调小 10 倍即可保持同样的相对速度；0 则只剩涡旋与云带扭动。
-- `contrast`：示踪场带来的明暗起伏强度。0 关闭、0.5 自然、1.0 以上会像电视雪花。
-- `vortexSpin`：涡旋扭转幅度倍率，1.0 约等于大红斑核心与周围云领来回扭转 ±31°。
-- `turbulence`：云带边缘被拉扯的强度，0.6 温和、1.5 剧烈。
+- `tracerSpeed`：示踪云纹的流速倍率，默认 2.0；0 表示示踪云纹不沿急流漂移。它和自转速度是观感搭配关系，自转调慢 10 倍就把它也调小 10 倍。
+- `contrast`：示踪云纹带来的明暗起伏，默认 0.20；0.3 以上开始像噪点，0 则完全不加亮暗层。
+- `vortexSpin`：涡旋扭转幅度倍率。1.0 时大红斑内部与周围云领来回扭转约 ±31°，位移有上限，不会把照片卷成螺旋。
+- `turbulence`：示踪云纹在急流边缘的起伏倍率，默认 0.9；只影响亮暗层，不改变底图几何。
+- `geometry`：底图的几何位移强度，默认 1.0（最大约 2.9° 经度）；设为 0 则照片完全刚性，只有亮暗层在动。
 
 风速剖面 `PROFILE` 与涡旋表 `VORTICES` 在 `js/atmosphere.js`：`PROFILE` 单位 `[纬度, 米/秒]`，正值为向东；`VORTICES` 是每张贴图的大红斑/白卵位置、椭圆半径与扭转周期，单位是贴图 uv。位置可用 `python/analyze_vortices.py` 重新量测，再用 `?mark=u,v` 在画面上打点核对。
+
+### 为什么不会再越跑越花
+
+观测底图始终从原始 `uv` 采样。急流剪切、涡旋和噪声只改变程序化示踪层的取样位置，示踪层以低对比度调节亮度：
+
+| 项 | 作用位置 | 会不会累积 |
+|---|---|---|
+| 纬向剪切 | 仅示踪云纹的经度 | 不会，`sin` 有界 |
+| 涡旋扭转 | 仅示踪云纹，不改变大红斑照片 | 不会，`sin` 有界，相位用 `fract()` 折回 |
+| 示踪亮暗层 | 不改几何，亮度变化由 `contrast` 控制 | 坐标用 `fract()` 折回 |
+
+底图的几何位移严格为零，所以连续运行不会把照片中的云带拉伸、卷成螺旋或拖出尾迹。示踪层仍会变化，但不代表真实木星的逐时天气预报。
+
+示踪噪声用 `texture(..., bias)` 显式抬高 mip 层：在 2560 宽度下噪点纹理一个纹素只占两三个屏幕像素，不抬层就会出现“横向刷痕”。
+
+另外宿主现在对所有页面、脚本、贴图都返回 `Cache-Control: no-store`。这点很关键：以前改完 `js/` 再重启，Chrome 仍可能从磁盘缓存取旧的着色器，画面看起来就像“算法自己跑坏了”。
 
 ## 全球图片怎样贴到球面上
 
@@ -197,7 +232,7 @@ NASA 的全球图是把木星表面按经纬度展开成一张长方形图片：
 1. 用 `gl_FragCoord` 把屏幕像素换成以木星中心为原点的坐标；根据 `R` 和 `POLAR_RATIO` 判断它是否落在可见的扁球体轮廓内。轮廓之外输出黑色。
 2. 对轮廓内的像素，计算它在球体朝向观众这一面的深度 `z`，得到对应的三维表面位置，再求纬度 `latitude` 与经度 `longitude`。NASA Cassini 图使用行星心纬度；合成图和哈勃图按行星面纬度采样。
 3. 把经纬度转换为纹理坐标 `uv`：横坐标由经度除以 `2π` 得到，纵坐标由纬度映射到 0～1。纹理采样器的 `GL_REPEAT` 让经度在图片左右边界循环，保留连续的纹理坐标以避免接缝处错误的 mipmap 层级；加载图片时的 `UNPACK_FLIP_Y_WEBGL` 负责使图片南北方向与 WebGL 坐标一致。
-4. `textureGrad` 读取对应位置的云带颜色；开启实时大气时，先用 `jupiterAtmosphere()` 按气流把 `uv` 位移到新的采样点。自转时逐渐改变采样经度（`u_rotation`），因此全球图绕球面移动，木星轮廓保持不变。
+4. `textureGrad` 始终从原始 `uv` 读取观测贴图，照片中的云带、大红斑和极区形状不会被动效改变；开启实时大气时，`jupiterAtmosphere()` 用风场移动一层低对比度的示踪云纹。自转时逐渐改变采样经度（`u_rotation`），因此全球图绕球面移动，木星轮廓保持不变。
 5. 根据表面法线与模拟太阳方向计算明暗，并在轮廓边缘做抗锯齿和轻微临边效果，形成有体积感的木星。
 
 这种做法相当于从三维扁球体表面反查二维全球图。贴图的清晰度受 NASA 原图分辨率限制；4K 渲染缓冲可使轮廓和画面输出更细腻，但不能凭空增加云层细节。
@@ -211,7 +246,7 @@ NASA 的全球图是把木星表面按经纬度展开成一张长方形图片：
 - 自转方向：北方朝上时，云层特征由左向右移动，参考 [NASA/JPL 九帧旋转序列](https://www.jpl.nasa.gov/images/pia02825-nine-frames-as-jupiter-turns/)。
 - 形状：NASA [Jupiter Fact Sheet](https://nssdc.gsfc.nasa.gov/planetary/factsheet/jupiterfact.html) 的赤道半径 71,492 km、极半径 66,854 km。
 
-卡西尼默认纹理拍于 2000 年、哈勃可选纹理拍于 2015 年；云层和大红斑会随时间变化。开启实时模拟（`js/atmosphere.js`）时，整张纹理不再按同一角速度转动：各条带按实测急流剪切，大红斑和白卵处叠加旋转涡旋，因此不同纬度的云带流速不同；剪切与涡旋都是有界振荡，不会随时间累积，长跑也不会把照片拧成花。关闭时退回刚性自转。哈勃图的极区缺测，着色器只在极端纬度用最近观测行延伸。太阳照明方向和起始经度是用于壁纸构图的设定，不代表当前时刻的真实木星朝向。14400×7200 是合成图文件尺寸，并不意味着每个区域都含有同等像素级的原始观测细节；本机 2560×1440 屏幕上，木星直径约 1000 物理像素，更大的贴图改善会受到显示尺寸限制。
+卡西尼默认纹理拍于 2000 年、哈勃可选纹理拍于 2015 年；云层和大红斑会随时间变化。开启实时动效（`js/atmosphere.js`）时，照片仍按统一角速度自转，按急流剖面漂移的程序化示踪层只提供轻微的云纹变化，涡旋只影响示踪层。它是根据观测风场设计的视觉示意，不能预测真实木星某一时刻的云形。关闭时只显示刚性自转的原照片。哈勃图的极区缺测，着色器只在极端纬度用最近观测行延伸。太阳照明方向和起始经度是用于壁纸构图的设定，不代表当前时刻的真实木星朝向。14400×7200 是合成图文件尺寸，并不意味着每个区域都含有同等像素级的原始观测细节；本机 2560×1440 屏幕上，木星直径约 1000 物理像素，更大的贴图改善会受到显示尺寸限制。
 
 为了减轻原版卡西尼与哈勃全球贴图的首尾拼接线，它们的播放用 PNG 在左右两侧各 64 像素范围内做了平滑过渡；原始 TIFF 文件保留在 `assets/` 目录。预览 PNG 可由 `python python\render_preview.py cassini`、`python python\render_preview.py hubble` 或 `python python\render_preview.py merged` 重新生成。
 
@@ -223,4 +258,4 @@ NASA 的全球图是把木星表面按经纬度展开成一张长方形图片：
 - 第五个参数是附加查询串，例如 `"turn=0.9912"` 冻结自转角度、`"mark=0.3688,0.3792"` 在贴图坐标处点一个绿点核对涡旋位置。
 - 第六个参数是窗口尺寸，例如 `1600x900`，默认 `3840x2160`。
 
-例如生成一张 1600×900、把大红斑转到正中、大气冻结在第 45 秒的图：`python python\render_preview.py cassini 0.36 live 45 "turn=0.9912" 1600x900`。`demo_live_weather.gif` 是用同样参数渲染 8 帧拼成的演示动画，可以看到云带缓慢剪切、大红斑内部来回扭转。
+例如生成一张 1600×900、把大红斑转到正中、示踪层冻结在第 45 秒的图：`python python\render_preview.py cassini 0.36 live 45 "turn=0.9912" 1600x900`。`demo_live_weather.gif` 是旧算法的演示；新算法的云带和大红斑照片始终保持原有形状。
