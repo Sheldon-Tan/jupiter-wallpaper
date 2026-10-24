@@ -87,7 +87,7 @@ window.JupiterScene = (function () {
       // GL_REPEAT 负责经度环绕；保持坐标不折回，mipmap 导数才正确。
       uv.y = clamp(uv.y, u_polar_limit, 1.0 - u_polar_limit);
 
-      // 实时大气：用风场把采样点挪开，并带回一个云顶密度。
+      // 实时大气只让微弱的示踪层流动；NASA 底图坐标始终保持原样。
       float cloud = 0.5;
       vec2 deck = uv;
       if (u_live > 0.5) {
@@ -95,7 +95,7 @@ window.JupiterScene = (function () {
         deck = atmosphere.xy;
         cloud = atmosphere.z;
       }
-      // 导数取自未位移的 uv：云带被拉扯时 mipmap 不会突然变糊。
+      // 底图坐标和导数都来自原始 uv，长期运行不会拉伸照片。
       vec2 dX = dFdx(uv) * MIP_SCALE;
       vec2 dY = dFdy(uv) * MIP_SCALE;
       vec3 clouds = textureGrad(u_map, deck, dX, dY).rgb;
